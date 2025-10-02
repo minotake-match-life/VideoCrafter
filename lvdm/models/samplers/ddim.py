@@ -82,24 +82,11 @@ class DDIMSampler(object):
                log_every_t=100,
                unconditional_guidance_scale=1.,
                unconditional_conditioning=None,
+               fps=None,
                # this has to come in the same format as the conditioning, # e.g. as encoded tokens, ...
                **kwargs
                ):
         
-        # check condition bs
-        if conditioning is not None:
-            if isinstance(conditioning, dict):
-                try:
-                    cbs = conditioning[list(conditioning.keys())[0]].shape[0]
-                except:
-                    cbs = conditioning[list(conditioning.keys())[0]][0].shape[0]
-
-                if cbs != batch_size:
-                    print(f"Warning: Got {cbs} conditionings but batch-size is {batch_size}")
-            else:
-                if conditioning.shape[0] != batch_size:
-                    print(f"Warning: Got {conditioning.shape[0]} conditionings but batch-size is {batch_size}")
-
         self.make_schedule(ddim_num_steps=S, ddim_eta=eta, verbose=schedule_verbose)
         
         # make shape
@@ -125,6 +112,7 @@ class DDIMSampler(object):
                                                     log_every_t=log_every_t,
                                                     unconditional_guidance_scale=unconditional_guidance_scale,
                                                     unconditional_conditioning=unconditional_conditioning,
+                                                    fps=fps,
                                                     verbose=verbose,
                                                     **kwargs)
         return samples, intermediates
@@ -135,14 +123,14 @@ class DDIMSampler(object):
                       callback=None, timesteps=None, quantize_denoised=False,
                       mask=None, x0=None, img_callback=None, log_every_t=100,
                       temperature=1., noise_dropout=0., score_corrector=None, corrector_kwargs=None,
-                      unconditional_guidance_scale=1., unconditional_conditioning=None, verbose=True,
-                      cond_tau=1., target_size=None, start_timesteps=None,
+                      unconditional_guidance_scale=1., unconditional_conditioning=None, fps=None,
+                      verbose=True,cond_tau=1., target_size=None, start_timesteps=None,
                       **kwargs):
         device = self.model.betas.device        
         print('ddim device', device)
         b = shape[0]
         if x_T is None:
-            img = torch.randn(shape, device=device)
+            img = torch.randn(shape, device=device, generator=torch.Generator(device=device).manual_seed(42))
         else:
             img = x_T
         
@@ -196,7 +184,7 @@ class DDIMSampler(object):
                                       corrector_kwargs=corrector_kwargs,
                                       unconditional_guidance_scale=unconditional_guidance_scale,
                                       unconditional_conditioning=unconditional_conditioning,
-                                      x0=x0,
+                                      x0=x0, fps=fps,
                                       **kwargs)
             
             img, pred_x0 = outs
@@ -213,22 +201,22 @@ class DDIMSampler(object):
     def p_sample_ddim(self, x, c, t, index, repeat_noise=False, use_original_steps=False, quantize_denoised=False,
                       temperature=1., noise_dropout=0., score_corrector=None, corrector_kwargs=None,
                       unconditional_guidance_scale=1., unconditional_conditioning=None,
-                      uc_type=None, conditional_guidance_scale_temporal=None, **kwargs):
+                      uc_type=None, conditional_guidance_scale_temporal=None, fps=None, **kwargs):
         b, *_, device = *x.shape, x.device
         if x.dim() == 5:
             is_video = True
         else:
             is_video = False
         if unconditional_conditioning is None or unconditional_guidance_scale == 1.:
-            e_t = self.model.apply_model(x, t, c, **kwargs) # unet denoiser
+            e_t = self.model.apply_model(x, t, c, fps=fps, **kwargs) # unet denoiser
         else:
             # with unconditional condition
             if isinstance(c, torch.Tensor):
-                e_t = self.model.apply_model(x, t, c, **kwargs)
-                e_t_uncond = self.model.apply_model(x, t, unconditional_conditioning, **kwargs)
+                e_t = self.model.apply_model(x, t, c, fps=fps, **kwargs)
+                e_t_uncond = self.model.apply_model(x, t, unconditional_conditioning, fps=fps, **kwargs)
             elif isinstance(c, dict):
-                e_t = self.model.apply_model(x, t, c, **kwargs)
-                e_t_uncond = self.model.apply_model(x, t, unconditional_conditioning, **kwargs)
+                e_t = self.model.apply_model(x, t, c, fps=fps, **kwargs)
+                e_t_uncond = self.model.apply_model(x, t, unconditional_conditioning, fps=fps, **kwargs)
             else:
                 raise NotImplementedError
             # text cfg
@@ -289,8 +277,10 @@ class DDIMSampler(object):
             x_prev = a_prev.sqrt() * pred_x0 + dir_xt + noise
 
         return x_prev, pred_x0
+    
 
 
+    # don't use these functions
     @torch.no_grad()
     def stochastic_encode(self, x0, t, use_original_steps=False, noise=None):
         # fast, but does not allow for exact reconstruction
@@ -333,4 +323,3 @@ class DDIMSampler(object):
                                           unconditional_guidance_scale=unconditional_guidance_scale,
                                           unconditional_conditioning=unconditional_conditioning)
         return x_dec
-

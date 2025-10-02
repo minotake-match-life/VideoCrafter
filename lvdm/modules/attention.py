@@ -3,12 +3,6 @@ import torch
 from torch import nn, einsum
 import torch.nn.functional as F
 from einops import rearrange, repeat
-try:
-    import xformers
-    import xformers.ops
-    XFORMERS_IS_AVAILBLE = True
-except:
-    XFORMERS_IS_AVAILBLE = False
 from lvdm.common import (
     checkpoint,
     exists,
@@ -18,27 +12,9 @@ from lvdm.basics import (
     zero_module,
 )
 
-class RelativePosition(nn.Module):
-    """ https://github.com/evelinehong/Transformer_Relative_Position_PyTorch/blob/master/relative_position.py """
-
-    def __init__(self, num_units, max_relative_position):
-        super().__init__()
-        self.num_units = num_units
-        self.max_relative_position = max_relative_position
-        self.embeddings_table = nn.Parameter(torch.Tensor(max_relative_position * 2 + 1, num_units))
-        nn.init.xavier_uniform_(self.embeddings_table)
-
-    def forward(self, length_q, length_k):
-        device = self.embeddings_table.device
-        range_vec_q = torch.arange(length_q, device=device)
-        range_vec_k = torch.arange(length_k, device=device)
-        distance_mat = range_vec_k[None, :] - range_vec_q[:, None]
-        distance_mat_clipped = torch.clamp(distance_mat, -self.max_relative_position, self.max_relative_position)
-        final_mat = distance_mat_clipped + self.max_relative_position
-        final_mat = final_mat.long()
-        embeddings = self.embeddings_table[final_mat]
-        return embeddings
-
+# -----------------------------------------------------------
+# Attention modules
+# -----------------------------------------------------------
 
 class CrossAttention(nn.Module):
 
@@ -68,10 +44,6 @@ class CrossAttention(nn.Module):
             assert(temporal_length is not None)
             self.relative_position_k = RelativePosition(num_units=dim_head, max_relative_position=temporal_length)
             self.relative_position_v = RelativePosition(num_units=dim_head, max_relative_position=temporal_length)
-        else:
-            ## only used for spatial attention, while NOT for temporal attention
-            if XFORMERS_IS_AVAILBLE and temporal_length is None:
-                self.forward = self.efficient_forward
 
     def forward(self, x, context=None, mask=None):
         h = self.heads
@@ -125,64 +97,40 @@ class CrossAttention(nn.Module):
         del q
 
         return self.to_out(out)
-    
-    def efficient_forward(self, x, context=None, mask=None):
-        q = self.to_q(x)
-        context = default(context, x)
 
-        ## considering image token additionally
-        if context is not None and self.img_cross_attention:
-            context, context_img = context[:,:self.text_context_len,:], context[:,self.text_context_len:,:]
-            k = self.to_k(context)
-            v = self.to_v(context)
-            k_ip = self.to_k_ip(context_img)
-            v_ip = self.to_v_ip(context_img)
-        else:
-            k = self.to_k(context)
-            v = self.to_v(context)
+class GEGLU(nn.Module):
+    def __init__(self, dim_in, dim_out):
+        super().__init__()
+        self.proj = nn.Linear(dim_in, dim_out * 2)
 
-        b, _, _ = q.shape
-        q, k, v = map(
-            lambda t: t.unsqueeze(3)
-            .reshape(b, t.shape[1], self.heads, self.dim_head)
-            .permute(0, 2, 1, 3)
-            .reshape(b * self.heads, t.shape[1], self.dim_head)
-            .contiguous(),
-            (q, k, v),
+    def forward(self, x):
+        x, gate = self.proj(x).chunk(2, dim=-1)
+        return x * F.gelu(gate)
+
+
+class FeedForward(nn.Module):
+    def __init__(self, dim, dim_out=None, mult=4, glu=False, dropout=0.):
+        super().__init__()
+        inner_dim = int(dim * mult)
+        dim_out = default(dim_out, dim)
+        project_in = nn.Sequential(
+            nn.Linear(dim, inner_dim),
+            nn.GELU()
+        ) if not glu else GEGLU(dim, inner_dim)
+
+        self.net = nn.Sequential(
+            project_in,
+            nn.Dropout(dropout),
+            nn.Linear(inner_dim, dim_out)
         )
-        # actually compute the attention, what we cannot get enough of
-        out = xformers.ops.memory_efficient_attention(q, k, v, attn_bias=None, op=None)
 
-        ## considering image token additionally
-        if context is not None and self.img_cross_attention:
-            k_ip, v_ip = map(
-                lambda t: t.unsqueeze(3)
-                .reshape(b, t.shape[1], self.heads, self.dim_head)
-                .permute(0, 2, 1, 3)
-                .reshape(b * self.heads, t.shape[1], self.dim_head)
-                .contiguous(),
-                (k_ip, v_ip),
-            )
-            out_ip = xformers.ops.memory_efficient_attention(q, k_ip, v_ip, attn_bias=None, op=None)
-            out_ip = (
-                out_ip.unsqueeze(0)
-                .reshape(b, self.heads, out.shape[1], self.dim_head)
-                .permute(0, 2, 1, 3)
-                .reshape(b, out.shape[1], self.heads * self.dim_head)
-            )
+    def forward(self, x):
+        return self.net(x)
 
-        if exists(mask):
-            raise NotImplementedError
-        out = (
-            out.unsqueeze(0)
-            .reshape(b, self.heads, out.shape[1], self.dim_head)
-            .permute(0, 2, 1, 3)
-            .reshape(b, out.shape[1], self.heads * self.dim_head)
-        )
-        if context is not None and self.img_cross_attention:
-            out = out + self.image_cross_attention_scale * out_ip
-        return self.to_out(out)
 
+# -----------------------------------------------------------
+# Transformer blocks
+# -----------------------------------------------------------
 
 class BasicTransformerBlock(nn.Module):
 
@@ -310,7 +258,7 @@ class TemporalTransformer(nn.Module):
             assert(temporal_length is not None)
             self.mask = torch.tril(torch.ones([1, temporal_length, temporal_length]))
 
-        if self.only_self_att:
+        if self.only_self_att: # True
             context_dim = None
         self.transformer_blocks = nn.ModuleList([
             BasicTransformerBlock(
@@ -371,36 +319,104 @@ class TemporalTransformer(nn.Module):
             x = rearrange(x, '(b h w) c t -> b c t h w', b=b, h=h, w=w).contiguous()
 
         return x + x_in
-    
 
-class GEGLU(nn.Module):
-    def __init__(self, dim_in, dim_out):
+# -----------------------------------------------------------
+# Contextualizer (4 layers of ContextualizerBlock)
+# -----------------------------------------------------------
+
+class Contextualizer(nn.Module):
+    """
+    Contextualizer: 4 layers of ContextualizerBlock
+    """
+    def __init__(self, dim, n_heads, d_head):
         super().__init__()
-        self.proj = nn.Linear(dim_in, dim_out * 2)
+        self.block1 = ContextualizerBlock(dim, n_heads, d_head)
+        self.block2 = ContextualizerBlock(dim, n_heads, d_head)
+        self.block3 = ContextualizerBlock(dim, n_heads, d_head)
+        self.block4 = ContextualizerBlock(dim, n_heads, d_head, last=True)
 
-    def forward(self, x):
-        x, gate = self.proj(x).chunk(2, dim=-1)
-        return x * F.gelu(gate)
+    def forward(self, x, num_frames):
+        x_in = x
+        x = self.block1(x, num_frames=num_frames)
+        x = self.block2(x, num_frames=num_frames)
+        x = self.block3(x, num_frames=num_frames)
+        x = self.block4(x, num_frames=num_frames) # zero-initialized
+        x = x + x_in
+        return x
 
-
-class FeedForward(nn.Module):
-    def __init__(self, dim, dim_out=None, mult=4, glu=False, dropout=0.):
+class ContextualizerBlock(nn.Module):
+    """
+    x = context: (b*t,l,c)
+    Spatial Self-Attention + FFN ->
+    Temporal Self-Attention + FFN
+    """
+    def __init__(self, dim, n_heads, d_head, last=False):
         super().__init__()
-        inner_dim = int(dim * mult)
-        dim_out = default(dim_out, dim)
-        project_in = nn.Sequential(
-            nn.Linear(dim, inner_dim),
-            nn.GELU()
-        ) if not glu else GEGLU(dim, inner_dim)
+        self.last = last
 
-        self.net = nn.Sequential(
-            project_in,
-            nn.Dropout(dropout),
-            nn.Linear(inner_dim, dim_out)
-        )
+        # Self-Attention
+        self.attn1 = CrossAttention(query_dim=dim, heads=n_heads, dim_head=d_head, context_dim=None)
+        self.attn2 = CrossAttention(query_dim=dim, heads=n_heads, dim_head=d_head, context_dim=None)
 
-    def forward(self, x):
-        return self.net(x)
+        # FFN
+        self.ff1 = FeedForward(dim, glu=True)
+        if last:
+            self.ff2 = zero_module(FeedForward(dim, glu=True))
+        else:
+            self.ff2 = FeedForward(dim, glu=True)
+
+        # Pre-LN
+        self.norm1 = nn.LayerNorm(dim)
+        self.norm2 = nn.LayerNorm(dim)
+        self.norm3 = nn.LayerNorm(dim)
+        self.norm4 = nn.LayerNorm(dim)
+
+    def forward(self, x, num_frames):
+        b_t, l, c = x.shape
+        b = b_t // num_frames
+
+        # Spatial Self-Attention + FFN
+        x = rearrange(x, '(b t) l c -> b (t l) c', b=b, t=num_frames)
+        x = self.attn1(self.norm1(x)) + x
+        x = self.ff1(self.norm2(x)) + x
+
+        # Temporal Self-Attention + FFN
+        x = rearrange(x, 'b (t l) c -> (b l) t c', b=b, t=num_frames)
+        x = self.attn2(self.norm3(x)) + x
+        if self.last:
+            x = self.ff2(self.norm4(x)) # connect to input
+        else:
+            x = self.ff2(self.norm4(x)) + x
+        
+        # Reshape to original
+        x = rearrange(x, '(b l) t c -> (b t) l c', b=b, t=num_frames)
+        return x
+
+
+# -----------------------------------------------------------
+# Other attention modules (not used)
+# -----------------------------------------------------------
+
+class RelativePosition(nn.Module):
+    """ https://github.com/evelinehong/Transformer_Relative_Position_PyTorch/blob/master/relative_position.py """
+
+    def __init__(self, num_units, max_relative_position):
+        super().__init__()
+        self.num_units = num_units
+        self.max_relative_position = max_relative_position
+        self.embeddings_table = nn.Parameter(torch.Tensor(max_relative_position * 2 + 1, num_units))
+        nn.init.xavier_uniform_(self.embeddings_table)
+
+    def forward(self, length_q, length_k):
+        device = self.embeddings_table.device
+        range_vec_q = torch.arange(length_q, device=device)
+        range_vec_k = torch.arange(length_k, device=device)
+        distance_mat = range_vec_k[None, :] - range_vec_q[:, None]
+        distance_mat_clipped = torch.clamp(distance_mat, -self.max_relative_position, self.max_relative_position)
+        final_mat = distance_mat_clipped + self.max_relative_position
+        final_mat = final_mat.long()
+        embeddings = self.embeddings_table[final_mat]
+        return embeddings
 
 
 class LinearAttention(nn.Module):

@@ -508,8 +508,16 @@ class LatentDiffusion(DDPM):
     @torch.no_grad()
     def decode_first_stage(self, z, **kwargs):
         return self.decode_core(z, **kwargs)
+    
+    # ========== training ==================
+    def forward(self, x_noisy, t, cond, **kwargs):
+        """ used during training time 
+        kwargs: fps
+        """
+        return self.model(x_noisy, t, **cond, **kwargs)
+    # ======================================
 
-    def apply_model(self, x_noisy, t, cond, **kwargs):
+    def apply_model(self, x_noisy, t, cond, fps, **kwargs):
         if isinstance(cond, dict):
             # hybrid case, cond is exptected to be a dict
             pass
@@ -519,7 +527,7 @@ class LatentDiffusion(DDPM):
             key = 'c_concat' if self.model.conditioning_key == 'concat' else 'c_crossattn'
             cond = {key: cond}
 
-        x_recon = self.model(x_noisy, t, **cond, **kwargs)
+        x_recon = self.model(x_noisy, t, **cond, fps=fps, **kwargs)
 
         if isinstance(x_recon, tuple):
             return x_recon[0]
@@ -657,33 +665,7 @@ class LatentDiffusion(DDPM):
         return img
 
 
-class LatentVisualDiffusion(LatentDiffusion):
-    def __init__(self, cond_img_config, finegrained=False, random_cond=False, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.random_cond = random_cond
-        self.instantiate_img_embedder(cond_img_config, freeze=True)
-        num_tokens = 16 if finegrained else 4
-        self.image_proj_model = self.init_projector(use_finegrained=finegrained, num_tokens=num_tokens, input_dim=1024,\
-                                            cross_attention_dim=1024, dim=1280)    
 
-    def instantiate_img_embedder(self, config, freeze=True):
-        embedder = instantiate_from_config(config)
-        if freeze:
-            self.embedder = embedder.eval()
-            self.embedder.train = disabled_train
-            for param in self.embedder.parameters():
-                param.requires_grad = False
-
-    def init_projector(self, use_finegrained, num_tokens, input_dim, cross_attention_dim, dim):
-        if not use_finegrained:
-            image_proj_model = ImageProjModel(clip_extra_context_tokens=num_tokens, cross_attention_dim=cross_attention_dim,
-                clip_embeddings_dim=input_dim
-            )
-        else:
-            image_proj_model = Resampler(dim=input_dim, depth=4, dim_head=64, heads=12, num_queries=num_tokens,
-                embedding_dim=dim, output_dim=cross_attention_dim, ff_mult=4
-            )
-        return image_proj_model
 
     ## Never delete this func: it is used in log_images() and inference stage
     def get_image_embeds(self, batch_imgs):
@@ -761,3 +743,33 @@ class DiffusionWrapper(pl.LightningModule):
             raise NotImplementedError()
 
         return out
+
+
+# don't use
+class LatentVisualDiffusion(LatentDiffusion):
+    def __init__(self, cond_img_config, finegrained=False, random_cond=False, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.random_cond = random_cond
+        self.instantiate_img_embedder(cond_img_config, freeze=True)
+        num_tokens = 16 if finegrained else 4
+        self.image_proj_model = self.init_projector(use_finegrained=finegrained, num_tokens=num_tokens, input_dim=1024,\
+                                            cross_attention_dim=1024, dim=1280)    
+
+    def instantiate_img_embedder(self, config, freeze=True):
+        embedder = instantiate_from_config(config)
+        if freeze:
+            self.embedder = embedder.eval()
+            self.embedder.train = disabled_train
+            for param in self.embedder.parameters():
+                param.requires_grad = False
+
+    def init_projector(self, use_finegrained, num_tokens, input_dim, cross_attention_dim, dim):
+        if not use_finegrained:
+            image_proj_model = ImageProjModel(clip_extra_context_tokens=num_tokens, cross_attention_dim=cross_attention_dim,
+                clip_embeddings_dim=input_dim
+            )
+        else:
+            image_proj_model = Resampler(dim=input_dim, depth=4, dim_head=64, heads=12, num_queries=num_tokens,
+                embedding_dim=dim, output_dim=cross_attention_dim, ff_mult=4
+            )
+        return image_proj_model

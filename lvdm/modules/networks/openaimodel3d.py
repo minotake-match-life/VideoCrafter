@@ -13,8 +13,11 @@ from lvdm.basics import (
     avg_pool_nd,
     normalization
 )
-from lvdm.modules.attention import SpatialTransformer, TemporalTransformer
+from lvdm.modules.attention import SpatialTransformer, TemporalTransformer, Contextualizer
 
+# -----------------------------------------------------------
+# Utils
+# -----------------------------------------------------------
 
 class TimestepBlock(nn.Module):
     """
@@ -47,6 +50,9 @@ class TimestepEmbedSequential(nn.Sequential, TimestepBlock):
                 x = layer(x,)
         return x
 
+# -----------------------------------------------------------
+# ResBlock
+# -----------------------------------------------------------
 
 class Downsample(nn.Module):
     """
@@ -104,6 +110,48 @@ class Upsample(nn.Module):
         if self.use_conv:
             x = self.conv(x)
         return x
+
+
+class TemporalConvBlock(nn.Module):
+    """
+    Adapted from modelscope: https://github.com/modelscope/modelscope/blob/master/modelscope/models/multi_modal/video_synthesis/unet_sd.py
+    """
+
+    def __init__(self, in_channels, out_channels=None, dropout=0.0, spatial_aware=False):
+        super(TemporalConvBlock, self).__init__()
+        if out_channels is None:
+            out_channels = in_channels
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        kernel_shape = (3, 1, 1) if not spatial_aware else (3, 3, 3)
+        padding_shape = (1, 0, 0) if not spatial_aware else (1, 1, 1)
+
+        # conv layers
+        self.conv1 = nn.Sequential(
+            nn.GroupNorm(32, in_channels), nn.SiLU(),
+            nn.Conv3d(in_channels, out_channels, kernel_shape, padding=padding_shape))
+        self.conv2 = nn.Sequential(
+            nn.GroupNorm(32, out_channels), nn.SiLU(), nn.Dropout(dropout),
+            nn.Conv3d(out_channels, in_channels, kernel_shape, padding=padding_shape))
+        self.conv3 = nn.Sequential(
+            nn.GroupNorm(32, out_channels), nn.SiLU(), nn.Dropout(dropout),
+            nn.Conv3d(out_channels, in_channels, (3, 1, 1), padding=(1, 0, 0)))
+        self.conv4 = nn.Sequential(
+            nn.GroupNorm(32, out_channels), nn.SiLU(), nn.Dropout(dropout),
+            nn.Conv3d(out_channels, in_channels, (3, 1, 1), padding=(1, 0, 0)))
+
+        # zero out the last layer params,so the conv block is identity
+        nn.init.zeros_(self.conv4[-1].weight)
+        nn.init.zeros_(self.conv4[-1].bias)
+
+    def forward(self, x):
+        identity = x
+        x = self.conv1(x)
+        x = self.conv2(x)
+        x = self.conv3(x)
+        x = self.conv4(x)
+
+        return x + identity
 
 
 class ResBlock(TimestepBlock):
@@ -233,48 +281,9 @@ class ResBlock(TimestepBlock):
             h = rearrange(h, 'b c t h w -> (b t) c h w')
         return h
 
-
-class TemporalConvBlock(nn.Module):
-    """
-    Adapted from modelscope: https://github.com/modelscope/modelscope/blob/master/modelscope/models/multi_modal/video_synthesis/unet_sd.py
-    """
-
-    def __init__(self, in_channels, out_channels=None, dropout=0.0, spatial_aware=False):
-        super(TemporalConvBlock, self).__init__()
-        if out_channels is None:
-            out_channels = in_channels
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        kernel_shape = (3, 1, 1) if not spatial_aware else (3, 3, 3)
-        padding_shape = (1, 0, 0) if not spatial_aware else (1, 1, 1)
-
-        # conv layers
-        self.conv1 = nn.Sequential(
-            nn.GroupNorm(32, in_channels), nn.SiLU(),
-            nn.Conv3d(in_channels, out_channels, kernel_shape, padding=padding_shape))
-        self.conv2 = nn.Sequential(
-            nn.GroupNorm(32, out_channels), nn.SiLU(), nn.Dropout(dropout),
-            nn.Conv3d(out_channels, in_channels, kernel_shape, padding=padding_shape))
-        self.conv3 = nn.Sequential(
-            nn.GroupNorm(32, out_channels), nn.SiLU(), nn.Dropout(dropout),
-            nn.Conv3d(out_channels, in_channels, (3, 1, 1), padding=(1, 0, 0)))
-        self.conv4 = nn.Sequential(
-            nn.GroupNorm(32, out_channels), nn.SiLU(), nn.Dropout(dropout),
-            nn.Conv3d(out_channels, in_channels, (3, 1, 1), padding=(1, 0, 0)))
-
-        # zero out the last layer params,so the conv block is identity
-        nn.init.zeros_(self.conv4[-1].weight)
-        nn.init.zeros_(self.conv4[-1].bias)
-
-    def forward(self, x):
-        identity = x
-        x = self.conv1(x)
-        x = self.conv2(x)
-        x = self.conv3(x)
-        x = self.conv4(x)
-
-        return x + identity
-
+# ------------------------------------------------------------
+# UNetModel
+# ------------------------------------------------------------
 
 class UNetModel(nn.Module):
     """
@@ -305,35 +314,36 @@ class UNetModel(nn.Module):
     """
 
     def __init__(self,
-                 in_channels,
-                 model_channels,
-                 out_channels,
-                 num_res_blocks,
-                 attention_resolutions,
+                 in_channels, # 4
+                 model_channels, # 320
+                 out_channels, # 4
+                 num_res_blocks, # 2
+                 attention_resolutions, # (4, 2, 1)
                  dropout=0.0,
-                 channel_mult=(1, 2, 4, 8),
+                 channel_mult=(1, 2, 4, 8), # (1,2,4,4)
                  conv_resample=True,
                  dims=2,
-                 context_dim=None,
+                 context_dim=None, # 1024
                  use_scale_shift_norm=False,
                  resblock_updown=False,
                  num_heads=-1,
-                 num_head_channels=-1,
+                 num_head_channels=-1, # 64
                  transformer_depth=1,
-                 use_linear=False,
+                 use_linear=False, # True
                  use_checkpoint=False,
-                 temporal_conv=False,
+                 temporal_conv=False, # True
                  tempspatial_aware=False,
                  temporal_attention=True,
                  temporal_selfatt_only=True,
-                 use_relative_position=True,
+                 use_relative_position=True, # False
                  use_causal_attention=False,
-                 temporal_length=None,
+                 temporal_length=None, 
                  use_fp16=False,
-                 addition_attention=False,
+                 addition_attention=False, # True
                  use_image_attention=False,
                  temporal_transformer_depth=1,
-                 fps_cond=False,
+                 fps_cond=False, # True
+                 contextualizer=False, # True
                 ):
         super(UNetModel, self).__init__()
         if num_heads == -1:
@@ -356,7 +366,7 @@ class UNetModel(nn.Module):
         self.addition_attention=addition_attention
         self.use_image_attention = use_image_attention
         self.fps_cond=fps_cond
-
+        self.contextualizer=contextualizer
 
 
         self.time_embed = nn.Sequential(
@@ -370,13 +380,21 @@ class UNetModel(nn.Module):
                 nn.SiLU(),
                 linear(time_embed_dim, time_embed_dim),
             )
+        
+        if self.contextualizer:
+            print(f'Use contextualizer for text embedding with context dim {context_dim}')
+            self.contextualizer_embed = Contextualizer(
+                dim=context_dim, # 1024
+                n_heads=8,
+                d_head=64
+            )
 
         self.input_blocks = nn.ModuleList(
             [
                 TimestepEmbedSequential(conv_nd(dims, in_channels, model_channels, 3, padding=1))
             ]
         )
-        if self.addition_attention:
+        if self.addition_attention: # True
             self.init_attn=TimestepEmbedSequential(
                 TemporalTransformer(
                     model_channels,
@@ -434,7 +452,7 @@ class UNetModel(nn.Module):
                             use_scale_shift_norm=use_scale_shift_norm,
                             down=True
                         )
-                        if resblock_updown
+                        if resblock_updown # False
                         else Downsample(ch, conv_resample, dims=dims, out_channels=out_ch)
                     )
                 )
@@ -519,7 +537,7 @@ class UNetModel(nn.Module):
                             use_scale_shift_norm=use_scale_shift_norm,
                             up=True
                         )
-                        if resblock_updown
+                        if resblock_updown # False
                         else Upsample(ch, conv_resample, dims=dims, out_channels=out_ch)
                     )
                     ds //= 2
@@ -535,15 +553,23 @@ class UNetModel(nn.Module):
         t_emb = timestep_embedding(timesteps, self.model_channels, repeat_only=False)
         emb = self.time_embed(t_emb)
 
+        # ---------------------------------------------------------------
+        # modify for per-frame prompt
+        # ---------------------------------------------------------------
+        b,_,t,_,_ = x.shape
+        _, l_context, _ = context.shape
+        if len(context) == b * t:
+            context = self.contextualizer_embed(context, t) if self.contextualizer else context
+        else:
+            ## repeat t times for context [(b t) 77 768] & time embedding
+            context = context.repeat_interleave(repeats=t, dim=0)
+        # ---------------------------------------------------------------
+
         if self.fps_cond:
             if type(fps) == int:
                 fps = torch.full_like(timesteps, fps)
-            fps_emb = timestep_embedding(fps,self.model_channels, repeat_only=False)
+            fps_emb = timestep_embedding(fps, self.model_channels, repeat_only=False)
             emb += self.fps_embedding(fps_emb)
-
-        b,_,t,_,_ = x.shape
-        ## repeat t times for context [(b t) 77 768] & time embedding
-        context = context.repeat_interleave(repeats=t, dim=0)
         emb = emb.repeat_interleave(repeats=t, dim=0)
 
         ## always in shape (b t) c h w, except for temporal layer

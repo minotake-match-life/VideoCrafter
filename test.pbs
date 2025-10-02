@@ -1,0 +1,19 @@
+#!/bin/bash -l
+
+# ------- qsub options -------
+#PBS -q regular-g
+#PBS -l select=1
+#PBS -l walltime=9:00:00
+#PBS -W group_list=xg25g011
+#PBS -N test
+#PBS -o /work/xg25g011/x10574/VideoCrafter/logs/test.out
+#PBS -j oe
+
+# ------- runtime env -------
+source ~/.bashrc
+cd "$PBS_O_WORKDIR"
+
+uv run python test.py \
+    --ckpt_path "/work/xg25g011/x10574/VideoCrafter/logs/train/2025-09-30_220514/model_025.pt" \
+    --output_dir "./output/full_cp25" \
+    > /work/xg25g011/x10574/VideoCrafter/logs/test.log 2>&1
