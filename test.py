@@ -70,7 +70,10 @@ def synthesis(model, prompts, noise_shape, n_samples=1, ddim_steps=50, ddim_eta=
 def main(args):
     print("Loading model...")
     config = OmegaConf.load("./configs/inference_t2v_512_v2.0.yaml")["model"]
-    if args.use_contextualizer:
+    if args.use_improve_contextualizer:
+        print("<config> Using improved contextualizer", flush=True)
+        config['params']['unet_config']['params']['improve_contextualizer'] = True
+    elif args.use_contextualizer:
         print("<config> Using contextualizer", flush=True)
         config['params']['unet_config']['params']['contextualizer'] = True
     model = instantiate_from_config(config)
@@ -129,6 +132,8 @@ if __name__ == '__main__':
     parser.add_argument("--unconditional_guidance_scale", type=float, default=7.5, help="prompt classifier-free guidance")
 
     parser.add_argument("--use_contextualizer", action="store_true")
+    parser.add_argument("--use_improve_contextualizer", action="store_true")
+
 
     args = parser.parse_args()
 

@@ -80,7 +80,10 @@ class DDPM(pl.LightningModule):
         if isinstance(self.image_size, int):
             self.image_size = [self.image_size, self.image_size]
         self.use_positional_encodings = use_positional_encodings
+
+
         self.model = DiffusionWrapper(unet_config, conditioning_key)
+        
         self.use_ema = use_ema
         if self.use_ema:
             self.model_ema = LitEma(self.model)
@@ -683,13 +686,13 @@ class DiffusionWrapper(pl.LightningModule):
 
     def forward(self, x, t, c_concat: list = None, c_crossattn: list = None,
                 c_adm=None, s=None, mask=None, **kwargs):
-        # temporal_context = fps is foNone
+        
         if self.conditioning_key is None:
             out = self.diffusion_model(x, t)
         elif self.conditioning_key == 'concat':
             xc = torch.cat([x] + c_concat, dim=1)
             out = self.diffusion_model(xc, t, **kwargs)
-        elif self.conditioning_key == 'crossattn':
+        elif self.conditioning_key == 'crossattn': # use this
             cc = torch.cat(c_crossattn, 1)
             out = self.diffusion_model(x, t, context=cc, **kwargs)
         elif self.conditioning_key == 'hybrid':
@@ -733,7 +736,7 @@ class DiffusionWrapper(pl.LightningModule):
             else:
                 xc = x
             out = self.diffusion_model(xc, t, context=cc, y=s, mask=mask)
-        elif self.conditioning_key == 'hybrid-time-adm': # adm means y, e.g., class index
+        elif self.conditioning_key == 'hybrid-time-adm': 
             # assert s is not None
             assert c_adm is not None
             xc = torch.cat([x] + c_concat, dim=1)

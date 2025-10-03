@@ -88,6 +88,6 @@ def checkpoint(func, inputs, params, flag):
     :param flag: if False, disable gradient checkpointing.
     """
     if flag:
-        return ckpt(func, *inputs)
+        return ckpt(func, *inputs, use_reentrant=False) # use_reentrant=False is important
     else:
         return func(*inputs)

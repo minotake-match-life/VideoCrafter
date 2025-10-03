@@ -164,7 +164,10 @@ def main_worker(local_rank, cluster_args, args):
     learning_rate = 2e-5
 
     config = OmegaConf.load("./configs/inference_t2v_512_v2.0.yaml")["model"]
-    if args.use_contextualizer:
+    if args.use_improve_contextualizer:
+        print("<config> Using improved contextualizer", flush=True)
+        config['params']['unet_config']['params']['improve_contextualizer'] = True
+    elif args.use_contextualizer:
         print("<config> Using contextualizer", flush=True)
         config['params']['unet_config']['params']['contextualizer'] = True
     model = instantiate_from_config(config)
@@ -191,7 +194,10 @@ def main_worker(local_rank, cluster_args, args):
         print(f"# FT mode: {args.ft_mode}", flush=True)
         print(f"# UNet params: trainable={trainable:,} / total={total:,}", flush=True)
 
-    model_parallel = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank], find_unused_parameters=False)
+    model_parallel = torch.nn.parallel.DistributedDataParallel(
+        model,
+        device_ids=[local_rank]
+    )
     print(f"Model distributed to gpu {global_rank}!", flush=True)
 
     ###############
@@ -293,5 +299,6 @@ if __name__ == '__main__':
         choices=["all", "freeze_spatial"],
     )
     parser.add_argument("--use_contextualizer", action="store_true")
+    parser.add_argument("--use_improve_contextualizer", action="store_true")
 
     main(parser.parse_args())

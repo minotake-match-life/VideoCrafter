@@ -3,7 +3,7 @@
 # ------- qsub options -------
 #PBS -q regular-g
 #PBS -l select=1
-#PBS -l walltime=9:00:00
+#PBS -l walltime=10:00:00
 #PBS -W group_list=xg25g011
 #PBS -N test
 #PBS -o /work/xg25g011/x10574/VideoCrafter/logs/test.out
@@ -14,6 +14,7 @@ source ~/.bashrc
 cd "$PBS_O_WORKDIR"
 
 uv run python test.py \
-    --ckpt_path "/work/xg25g011/x10574/VideoCrafter/logs/train/2025-09-30_220514/model_025.pt" \
-    --output_dir "./output/full_cp25" \
+    --ckpt_path "/work/xg25g011/x10574/VideoCrafter/logs/train/freeze_spatial_contextualizer/2025-10-01_020506/model_012.pt" \
+    --output_dir "./output/freeze_spatial_contextualizer_cp12" \
+    --use_contextualizer \
     > /work/xg25g011/x10574/VideoCrafter/logs/test.log 2>&1

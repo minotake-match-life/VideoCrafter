@@ -1,7 +1,9 @@
+import math
 from functools import partial
 import torch
 from torch import nn, einsum
 import torch.nn.functional as F
+
 from einops import rearrange, repeat
 from lvdm.common import (
     checkpoint,
@@ -328,31 +330,56 @@ class Contextualizer(nn.Module):
     """
     Contextualizer: 4 layers of ContextualizerBlock
     """
-    def __init__(self, dim, n_heads, d_head):
+    def __init__(self, dim, n_heads, d_head, improve=False):
         super().__init__()
-        self.block1 = ContextualizerBlock(dim, n_heads, d_head)
-        self.block2 = ContextualizerBlock(dim, n_heads, d_head)
-        self.block3 = ContextualizerBlock(dim, n_heads, d_head)
-        self.block4 = ContextualizerBlock(dim, n_heads, d_head, last=True)
+        
+        self.dim = dim
+        self.n_heads = n_heads
+        self.d_head = d_head
+
+        self.block1 = ContextualizerBlock(dim, n_heads, d_head, improve=improve)
+        self.block2 = ContextualizerBlock(dim, n_heads, d_head, improve=improve)
+        self.block3 = ContextualizerBlock(dim, n_heads, d_head, improve=improve)
+        self.block4 = ContextualizerBlock(dim, n_heads, d_head, last=True, improve=improve)
+
+        self.improve = improve
+        if self.improve:
+            self.time_embed = nn.Sequential(
+                nn.Linear(4*dim, dim),
+                nn.SiLU(),
+                nn.Linear(dim, dim),
+            )
+            print(f"[Contextualizer] improve contextualizer with positional embedding")
 
     def forward(self, x, num_frames):
         x_in = x
+
+        if self.improve:
+            # add positional embedding
+            b_t, l, c = x.shape # c=dim
+            b = b_t // num_frames
+            device = x.device
+            pe = build_sincos_position_embedding(num_frames, 4*c, device)
+            pe = self.time_embed(pe)
+            pe = repeat(pe, 't c -> (b t) c', b=b).unsqueeze(1) # (b*t, 1, c)
+            x = x + pe 
+
         x = self.block1(x, num_frames=num_frames)
         x = self.block2(x, num_frames=num_frames)
         x = self.block3(x, num_frames=num_frames)
         x = self.block4(x, num_frames=num_frames) # zero-initialized
+
         x = x + x_in
         return x
 
 class ContextualizerBlock(nn.Module):
     """
     x = context: (b*t,l,c)
-    Spatial Self-Attention + FFN ->
-    Temporal Self-Attention + FFN
     """
-    def __init__(self, dim, n_heads, d_head, last=False):
+    def __init__(self, dim, n_heads, d_head, last=False, improve=False):
         super().__init__()
         self.last = last
+        self.improve = improve
 
         # Self-Attention
         self.attn1 = CrossAttention(query_dim=dim, heads=n_heads, dim_head=d_head, context_dim=None)
@@ -375,23 +402,47 @@ class ContextualizerBlock(nn.Module):
         b_t, l, c = x.shape
         b = b_t // num_frames
 
-        # Spatial Self-Attention + FFN
+        # Self-Attention + FFN
         x = rearrange(x, '(b t) l c -> b (t l) c', b=b, t=num_frames)
         x = self.attn1(self.norm1(x)) + x
         x = self.ff1(self.norm2(x)) + x
+ 
+        if self.improve:
+            # Adjacent-Attention
+            device = x.device
+            mask = build_local_mask(num_frames, radius=1, device=device) # [t, t]
+            mask = mask.repeat_interleave(l, dim=0).repeat_interleave(l, dim=1)  # (t*l, t*l)
+            mask = mask.unsqueeze(0).repeat(b, 1, 1) # [b, tl, tl]
+            x = self.attn2(self.norm3(x), mask=mask) + x # (b, tl, c)
+            x = rearrange(x, 'b (t l) c -> (b t) l c', b=b, t=num_frames)
+        else:
+            # Temporal-Attention
+            x = rearrange(x, 'b (t l) c -> (b l) t c', b=b, t=num_frames)
+            x = self.attn2(self.norm3(x)) + x
+            x = rearrange(x, '(b l) t c -> (b t) l c', b=b, t=num_frames)
 
-        # Temporal Self-Attention + FFN
-        x = rearrange(x, 'b (t l) c -> (b l) t c', b=b, t=num_frames)
-        x = self.attn2(self.norm3(x)) + x
+        # FFN
         if self.last:
             x = self.ff2(self.norm4(x)) # connect to input
         else:
             x = self.ff2(self.norm4(x)) + x
         
-        # Reshape to original
-        x = rearrange(x, '(b l) t c -> (b t) l c', b=b, t=num_frames)
         return x
 
+def build_sincos_position_embedding(n_pos: int, dim: int, device: torch.device):
+    """(n_pos, dim) sinusoidal positional embedding (token-wise)."""
+    position = torch.arange(n_pos, device=device).float().unsqueeze(1)  # (n,1)
+    div_term = torch.exp(torch.arange(0, dim, 2, device=device).float() * (-(math.log(10000.0) / dim)))
+    pe = torch.zeros(n_pos, dim, device=device)
+    pe[:, 0::2] = torch.sin(position * div_term)
+    pe[:, 1::2] = torch.cos(position * div_term)
+    return pe  # (n_pos, dim)
+
+def build_local_mask(t: int, radius: int = 1, device=None):
+    # True=通す, False=切る（あなたのCrossAttentionは mask>0.5 で通す実装）
+    ar = torch.arange(t, device=device)
+    mask = (ar[:, None] - ar[None, :]).abs() <= radius   # [t, t] boolean
+    return mask.float()   # 後段で repeat して使う
 
 # -----------------------------------------------------------
 # Other attention modules (not used)

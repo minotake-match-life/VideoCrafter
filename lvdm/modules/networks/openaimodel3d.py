@@ -343,7 +343,8 @@ class UNetModel(nn.Module):
                  use_image_attention=False,
                  temporal_transformer_depth=1,
                  fps_cond=False, # True
-                 contextualizer=False, # True
+                 contextualizer=False, 
+                 improve_contextualizer=False, 
                 ):
         super(UNetModel, self).__init__()
         if num_heads == -1:
@@ -367,7 +368,7 @@ class UNetModel(nn.Module):
         self.use_image_attention = use_image_attention
         self.fps_cond=fps_cond
         self.contextualizer=contextualizer
-
+        self.improve_contextualizer=improve_contextualizer
 
         self.time_embed = nn.Sequential(
             linear(model_channels, time_embed_dim),
@@ -381,12 +382,14 @@ class UNetModel(nn.Module):
                 linear(time_embed_dim, time_embed_dim),
             )
         
-        if self.contextualizer:
+        if self.contextualizer or self.improve_contextualizer:
             print(f'Use contextualizer for text embedding with context dim {context_dim}')
+            print(f'Improve contextualizer: {self.improve_contextualizer}')
             self.contextualizer_embed = Contextualizer(
                 dim=context_dim, # 1024
                 n_heads=8,
-                d_head=64
+                d_head=64,
+                improve=self.improve_contextualizer,
             )
 
         self.input_blocks = nn.ModuleList(
@@ -559,7 +562,7 @@ class UNetModel(nn.Module):
         b,_,t,_,_ = x.shape
         _, l_context, _ = context.shape
         if len(context) == b * t:
-            context = self.contextualizer_embed(context, t) if self.contextualizer else context
+            context = self.contextualizer_embed(context, t) if (self.contextualizer or self.improve_contextualizer) else context
         else:
             ## repeat t times for context [(b t) 77 768] & time embedding
             context = context.repeat_interleave(repeats=t, dim=0)
