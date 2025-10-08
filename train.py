@@ -43,7 +43,7 @@ def _apply_ft_mode(unet: torch.nn.Module, mode: str):
         return
 
     elif mode == "freeze_spatial":
-        # UNet params: trainable=717,355,780 / total=1,530,839,620
+        # UNet params: trainable=722,601,098 / total=1,536,084,938
         
         # いったん UNet 全体を学習可に
         _set_requires_grad(unet, True)
@@ -132,7 +132,7 @@ def main_worker(local_rank, cluster_args, args):
     device = torch.device("cuda", local_rank)
 
     if global_rank == 0:
-        store_dir = "./logs/train/" + datetime.strftime(datetime.now(), "%Y-%m-%d_%H%M%S")
+        store_dir = f"./logs/train/{args.exp_name}/" + datetime.strftime(datetime.now(), "%Y-%m-%d_%H%M%S")
         for k, v in sorted(vars(args).items(), key=lambda x: x[0]):
             print(f"# {k}: {v}")
         print(f"# store_dir: {store_dir}")
@@ -170,6 +170,9 @@ def main_worker(local_rank, cluster_args, args):
     elif args.use_contextualizer:
         print("<config> Using contextualizer", flush=True)
         config['params']['unet_config']['params']['contextualizer'] = True
+    if args.use_c_aware:
+        print("<config> Using Context-Aware Temporal Attention", flush=True)
+        config['params']['unet_config']['params']['c_aware'] = True
     model = instantiate_from_config(config)
 
     if args.pretrained_ckpt is None:
@@ -288,10 +291,13 @@ def main_worker(local_rank, cluster_args, args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("--local_batch_size", type=int, default=4)
-    parser.add_argument("--ckpt_path", type=str, default="./weights/model.ckpt")
+    parser.add_argument("--ckpt_path", type=str, default="./weights/model.ckpt") # if args.pretrained_ckpt is None, use this path
     parser.add_argument("--dataset_root", type=str, required=True)
     parser.add_argument("--max_seq_len", type=int, default=8)
-    parser.add_argument("--pretrained_ckpt", type=str, default=None)
+    parser.add_argument("--pretrained_ckpt", type=str, default=None) # resume training from this checkpoint
+    parser.add_argument("--exp_name", type=str, required=True)
+    # full, freeze_spatial, freeze_spatial_contextualizer, freeze_spatial_improve, freeze_spatial_improve_caware
+
     parser.add_argument(
         "--ft_mode",
         type=str,
@@ -300,5 +306,6 @@ if __name__ == '__main__':
     )
     parser.add_argument("--use_contextualizer", action="store_true")
     parser.add_argument("--use_improve_contextualizer", action="store_true")
+    parser.add_argument("--use_c_aware", action="store_true")
 
     main(parser.parse_args())

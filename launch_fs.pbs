@@ -5,8 +5,8 @@
 #PBS -l select=8:mpiprocs=1       
 #PBS -l walltime=48:00:00
 #PBS -W group_list=xg25g011
-#PBS -N freeze_spatial_improve
-#PBS -o /work/xg25g011/x10574/VideoCrafter/logs/freeze_spatial_improve.out
+#PBS -N freeze_spatial_improve_caware
+#PBS -o /work/xg25g011/x10574/VideoCrafter/logs/freeze_spatial_improve_caware.out
 #PBS -j oe
 
 # ------- runtime env -------
@@ -37,6 +37,9 @@ mpirun -n 8 --map-by ppr:1:node \
   uv run python train.py \
     --local_batch_size 4 \
     --dataset_root "/work/xg25g011/x10574/ShowHowData/data/ShowHowToTrain" \
-    --use_improve_contextualizer \
+    --exp_name "freeze_spatial_improve_caware" \
     --ft_mode "freeze_spatial" \
-    > /work/xg25g011/x10574/VideoCrafter/logs/freeze_spatial_improve.log 2>&1
+    --use_improve_contextualizer \
+    --use_c_aware \
+    --pretrained_ckpt "/work/xg25g011/x10574/VideoCrafter/logs/train/freeze_spatial_improve_caware/2025-10-05_191127/model_023.pt" \
+    > /work/xg25g011/x10574/VideoCrafter/logs/freeze_spatial_improve_caware.log 2>&1

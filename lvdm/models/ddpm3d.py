@@ -667,9 +667,6 @@ class LatentDiffusion(DDPM):
             return img, intermediates
         return img
 
-
-
-
     ## Never delete this func: it is used in log_images() and inference stage
     def get_image_embeds(self, batch_imgs):
         ## img: b c h w

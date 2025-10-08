@@ -37,15 +37,22 @@ class TimestepEmbedSequential(nn.Sequential, TimestepBlock):
     """
 
     def forward(self, x, emb, context=None, batch_size=None):
+        spatial2temporal = None
         for layer in self:
             if isinstance(layer, TimestepBlock):
                 x = layer(x, emb, batch_size)
             elif isinstance(layer, SpatialTransformer):
                 x = layer(x, context)
+                if layer.c_aware:
+                    spatial2temporal = layer.attn2_out # save
             elif isinstance(layer, TemporalTransformer):
+                if layer.c_aware and spatial2temporal is not None:
+                    layer.attn2_out = spatial2temporal # set
                 x = rearrange(x, '(b f) c h w -> b c f h w', b=batch_size)
                 x = layer(x, context)
                 x = rearrange(x, 'b c f h w -> (b f) c h w')
+                if layer.c_aware:
+                    spatial2temporal = None # clear
             else:
                 x = layer(x,)
         return x
@@ -330,7 +337,7 @@ class UNetModel(nn.Module):
                  num_head_channels=-1, # 64
                  transformer_depth=1,
                  use_linear=False, # True
-                 use_checkpoint=False,
+                 use_checkpoint=False, # False
                  temporal_conv=False, # True
                  tempspatial_aware=False,
                  temporal_attention=True,
@@ -345,6 +352,7 @@ class UNetModel(nn.Module):
                  fps_cond=False, # True
                  contextualizer=False, 
                  improve_contextualizer=False, 
+                 c_aware=False, 
                 ):
         super(UNetModel, self).__init__()
         if num_heads == -1:
@@ -367,8 +375,12 @@ class UNetModel(nn.Module):
         self.addition_attention=addition_attention
         self.use_image_attention = use_image_attention
         self.fps_cond=fps_cond
+
+        #=========== proposed modules =============
         self.contextualizer=contextualizer
         self.improve_contextualizer=improve_contextualizer
+        self.c_aware = c_aware
+        #=========================================
 
         self.time_embed = nn.Sequential(
             linear(model_channels, time_embed_dim),
@@ -432,7 +444,8 @@ class UNetModel(nn.Module):
                         SpatialTransformer(ch, num_heads, dim_head, 
                             depth=transformer_depth, context_dim=context_dim, use_linear=use_linear,
                             use_checkpoint=use_checkpoint, disable_self_attn=False,
-                            img_cross_attention=self.use_image_attention
+                            img_cross_attention=self.use_image_attention,
+                            c_aware=self.c_aware
                         )
                     )
                     if self.temporal_attention:
@@ -441,7 +454,8 @@ class UNetModel(nn.Module):
                                 depth=temporal_transformer_depth, context_dim=context_dim, use_linear=use_linear,
                                 use_checkpoint=use_checkpoint, only_self_att=temporal_selfatt_only, 
                                 causal_attention=use_causal_attention, relative_position=use_relative_position, 
-                                temporal_length=temporal_length
+                                temporal_length=temporal_length,
+                                c_aware=self.c_aware
                             )
                         )
                 self.input_blocks.append(TimestepEmbedSequential(*layers))
@@ -477,7 +491,8 @@ class UNetModel(nn.Module):
             SpatialTransformer(ch, num_heads, dim_head, 
                 depth=transformer_depth, context_dim=context_dim, use_linear=use_linear,
                 use_checkpoint=use_checkpoint, disable_self_attn=False,
-                img_cross_attention=self.use_image_attention
+                img_cross_attention=self.use_image_attention,
+                c_aware=self.c_aware
             )
         ]
         if self.temporal_attention:
@@ -486,7 +501,8 @@ class UNetModel(nn.Module):
                     depth=temporal_transformer_depth, context_dim=context_dim, use_linear=use_linear,
                     use_checkpoint=use_checkpoint, only_self_att=temporal_selfatt_only, 
                     causal_attention=use_causal_attention, relative_position=use_relative_position, 
-                    temporal_length=temporal_length
+                    temporal_length=temporal_length,
+                    c_aware=self.c_aware
                 )
             )
         layers.append(
@@ -520,7 +536,8 @@ class UNetModel(nn.Module):
                         SpatialTransformer(ch, num_heads, dim_head, 
                             depth=transformer_depth, context_dim=context_dim, use_linear=use_linear,
                             use_checkpoint=use_checkpoint, disable_self_attn=False,
-                            img_cross_attention=self.use_image_attention
+                            img_cross_attention=self.use_image_attention,
+                            c_aware=self.c_aware
                         )
                     )
                     if self.temporal_attention:
@@ -529,7 +546,8 @@ class UNetModel(nn.Module):
                                 depth=temporal_transformer_depth, context_dim=context_dim, use_linear=use_linear,
                                 use_checkpoint=use_checkpoint, only_self_att=temporal_selfatt_only, 
                                 causal_attention=use_causal_attention, relative_position=use_relative_position, 
-                                temporal_length=temporal_length
+                                temporal_length=temporal_length,
+                                c_aware=self.c_aware
                             )
                         )
                 if level and i == num_res_blocks:

@@ -5,7 +5,7 @@
 #PBS -l select=1
 #PBS -l walltime=10:00:00
 #PBS -W group_list=xg25g011
-#PBS -N test
+#PBS -N test_freeze_spatial_improve_caware
 #PBS -o /work/xg25g011/x10574/VideoCrafter/logs/test.out
 #PBS -j oe
 
@@ -14,7 +14,8 @@ source ~/.bashrc
 cd "$PBS_O_WORKDIR"
 
 uv run python test.py \
-    --ckpt_path "/work/xg25g011/x10574/VideoCrafter/logs/train/freeze_spatial_contextualizer/2025-10-01_020506/model_012.pt" \
-    --output_dir "./output/freeze_spatial_contextualizer_cp12" \
-    --use_contextualizer \
-    > /work/xg25g011/x10574/VideoCrafter/logs/test.log 2>&1
+    --ckpt_path "/work/xg25g011/x10574/VideoCrafter/logs/train/freeze_spatial_improve_caware/2025-10-05_191127/model_012.pt" \
+    --output_dir "./output/freeze_spatial_improve_caware_cp12" \
+    --use_improve_contextualizer \
+    --use_c_aware \
+    > /work/xg25g011/x10574/VideoCrafter/logs/test4.log 2>&1

@@ -15,7 +15,41 @@ from lvdm.basics import (
 )
 
 # -----------------------------------------------------------
-# Attention modules
+# Utils modules
+# -----------------------------------------------------------
+
+class GEGLU(nn.Module):
+    def __init__(self, dim_in, dim_out):
+        super().__init__()
+        self.proj = nn.Linear(dim_in, dim_out * 2)
+
+    def forward(self, x):
+        x, gate = self.proj(x).chunk(2, dim=-1)
+        return x * F.gelu(gate)
+
+
+class FeedForward(nn.Module):
+    def __init__(self, dim, dim_out=None, mult=4, glu=False, dropout=0.):
+        super().__init__()
+        inner_dim = int(dim * mult)
+        dim_out = default(dim_out, dim)
+        project_in = nn.Sequential(
+            nn.Linear(dim, inner_dim),
+            nn.GELU()
+        ) if not glu else GEGLU(dim, inner_dim)
+
+        self.net = nn.Sequential(
+            project_in,
+            nn.Dropout(dropout),
+            nn.Linear(inner_dim, dim_out)
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+
+# -----------------------------------------------------------
+# Transformer blocks
 # -----------------------------------------------------------
 
 class CrossAttention(nn.Module):
@@ -100,44 +134,11 @@ class CrossAttention(nn.Module):
 
         return self.to_out(out)
 
-class GEGLU(nn.Module):
-    def __init__(self, dim_in, dim_out):
-        super().__init__()
-        self.proj = nn.Linear(dim_in, dim_out * 2)
-
-    def forward(self, x):
-        x, gate = self.proj(x).chunk(2, dim=-1)
-        return x * F.gelu(gate)
-
-
-class FeedForward(nn.Module):
-    def __init__(self, dim, dim_out=None, mult=4, glu=False, dropout=0.):
-        super().__init__()
-        inner_dim = int(dim * mult)
-        dim_out = default(dim_out, dim)
-        project_in = nn.Sequential(
-            nn.Linear(dim, inner_dim),
-            nn.GELU()
-        ) if not glu else GEGLU(dim, inner_dim)
-
-        self.net = nn.Sequential(
-            project_in,
-            nn.Dropout(dropout),
-            nn.Linear(inner_dim, dim_out)
-        )
-
-    def forward(self, x):
-        return self.net(x)
-
-
-# -----------------------------------------------------------
-# Transformer blocks
-# -----------------------------------------------------------
 
 class BasicTransformerBlock(nn.Module):
 
     def __init__(self, dim, n_heads, d_head, dropout=0., context_dim=None, gated_ff=True, checkpoint=True,
-                disable_self_attn=False, attention_cls=None, img_cross_attention=False):
+                disable_self_attn=False, attention_cls=None, img_cross_attention=False, c_aware=False):
         super().__init__()
         attn_cls = CrossAttention if attention_cls is None else attention_cls
         self.disable_self_attn = disable_self_attn
@@ -150,6 +151,11 @@ class BasicTransformerBlock(nn.Module):
         self.norm2 = nn.LayerNorm(dim)
         self.norm3 = nn.LayerNorm(dim)
         self.checkpoint = checkpoint
+
+        self.c_aware = c_aware
+        if self.c_aware:
+            print(f"[BasicTransformerBlock] use Context-Aware Temporal Attention")
+            self.attn2_out = None
 
     def forward(self, x, context=None, mask=None):
         ## implementation tricks: because checkpointing doesn't support non-tensor (e.g. None or scalar) arguments
@@ -164,8 +170,19 @@ class BasicTransformerBlock(nn.Module):
         return checkpoint(self._forward, input_tuple, self.parameters(), self.checkpoint)
 
     def _forward(self, x, context=None, mask=None):
+        
+        # Self-Attention or Temporal-Attention
         x = self.attn1(self.norm1(x), context=context if self.disable_self_attn else None, mask=mask) + x
-        x = self.attn2(self.norm2(x), context=context, mask=mask) + x
+
+        # Cross-Attention or Temporal-Attention
+        if self.c_aware and context is not None:
+            # Saved cross-attention output for Context-Aware Temporal Attention
+            self.attn2_out = self.attn2(self.norm2(x), context=context, mask=mask)
+            x = self.attn2_out + x
+        else:
+            x = self.attn2(self.norm2(x), context=context, mask=mask) + x
+        
+        # FFN
         x = self.ff(self.norm3(x)) + x
         return x
 
@@ -181,7 +198,7 @@ class SpatialTransformer(nn.Module):
     """
 
     def __init__(self, in_channels, n_heads, d_head, depth=1, dropout=0., context_dim=None,
-                 use_checkpoint=True, disable_self_attn=False, use_linear=False, img_cross_attention=False):
+                 use_checkpoint=True, disable_self_attn=False, use_linear=False, img_cross_attention=False, c_aware=False):
         super().__init__()
         self.in_channels = in_channels
         inner_dim = n_heads * d_head
@@ -200,7 +217,9 @@ class SpatialTransformer(nn.Module):
                 context_dim=context_dim,
                 img_cross_attention=img_cross_attention,
                 disable_self_attn=disable_self_attn,
-                checkpoint=use_checkpoint) for d in range(depth)
+                checkpoint=use_checkpoint,
+                c_aware=c_aware
+            ) for d in range(depth)
         ])
         if not use_linear:
             self.proj_out = zero_module(nn.Conv2d(inner_dim, in_channels, kernel_size=1, stride=1, padding=0))
@@ -208,23 +227,35 @@ class SpatialTransformer(nn.Module):
             self.proj_out = zero_module(nn.Linear(inner_dim, in_channels))
         self.use_linear = use_linear
 
+        self.c_aware = c_aware
+        if self.c_aware:
+            self.attn2_out = None
 
     def forward(self, x, context=None):
         b, c, h, w = x.shape
         x_in = x
+
+        # proj in
         x = self.norm(x)
         if not self.use_linear:
             x = self.proj_in(x)
         x = rearrange(x, 'b c h w -> b (h w) c').contiguous()
         if self.use_linear:
             x = self.proj_in(x)
+
+        # transformer (1block)
         for i, block in enumerate(self.transformer_blocks):
             x = block(x, context=context)
+            if self.c_aware:
+                self.attn2_out = block.attn2_out # (bt, l, c)
+        
+        # proj out
         if self.use_linear:
             x = self.proj_out(x)
         x = rearrange(x, 'b (h w) c -> b c h w', h=h, w=w).contiguous()
         if not self.use_linear:
             x = self.proj_out(x)
+        
         return x + x_in
     
     
@@ -237,13 +268,15 @@ class TemporalTransformer(nn.Module):
     """
     def __init__(self, in_channels, n_heads, d_head, depth=1, dropout=0., context_dim=None,
                  use_checkpoint=True, use_linear=False, only_self_att=True, causal_attention=False,
-                 relative_position=False, temporal_length=None):
+                 relative_position=False, temporal_length=None, c_aware=False):
         super().__init__()
+
         self.only_self_att = only_self_att
         self.relative_position = relative_position
         self.causal_attention = causal_attention
         self.in_channels = in_channels
         inner_dim = n_heads * d_head
+
         self.norm = torch.nn.GroupNorm(num_groups=32, num_channels=in_channels, eps=1e-6, affine=True)
         self.proj_in = nn.Conv1d(in_channels, inner_dim, kernel_size=1, stride=1, padding=0)
         if not use_linear:
@@ -251,36 +284,41 @@ class TemporalTransformer(nn.Module):
         else:
             self.proj_in = nn.Linear(in_channels, inner_dim)
 
-        if relative_position:
-            assert(temporal_length is not None)
-            attention_cls = partial(CrossAttention, relative_position=True, temporal_length=temporal_length)
+        if c_aware:
+            attention_cls = ContextAwareTmpAttention
+            self.attn2_out = None
         else:
             attention_cls = None
-        if self.causal_attention:
-            assert(temporal_length is not None)
-            self.mask = torch.tril(torch.ones([1, temporal_length, temporal_length]))
 
         if self.only_self_att: # True
             context_dim = None
+        else:
+            raise NotImplementedError("TemporalTransformer only supports self-attention now.")
+        
         self.transformer_blocks = nn.ModuleList([
             BasicTransformerBlock(
                 inner_dim,
                 n_heads,
                 d_head,
                 dropout=dropout,
-                context_dim=context_dim,
-                attention_cls=attention_cls,
+                context_dim=context_dim, # None
+                attention_cls=attention_cls, # None or ContextAwareTmpAttention
                 checkpoint=use_checkpoint) for d in range(depth)
         ])
+
         if not use_linear:
             self.proj_out = zero_module(nn.Conv1d(inner_dim, in_channels, kernel_size=1, stride=1, padding=0))
         else:
             self.proj_out = zero_module(nn.Linear(inner_dim, in_channels))
         self.use_linear = use_linear
 
+        self.c_aware = c_aware
+
     def forward(self, x, context=None):
         b, c, t, h, w = x.shape
         x_in = x
+
+        # proj in
         x = self.norm(x)
         x = rearrange(x, 'b c t h w -> (b h w) c t').contiguous()
         if not self.use_linear:
@@ -289,29 +327,19 @@ class TemporalTransformer(nn.Module):
         if self.use_linear:
             x = self.proj_in(x)
 
-        if self.causal_attention:
-            mask = self.mask.to(x.device)
-            mask = repeat(mask, 'l i j -> (l bhw) i j', bhw=b*h*w)
+        # prepare mask for context-aware temporal attention
+        if self.c_aware:
+            mask = self.attn2_out # set in openaimodel3d
+            mask = rearrange(mask, '(b t) l c -> (b l) t c', b=b, t=t).contiguous()
         else:
             mask = None
 
-        if self.only_self_att:
-            ## note: if no context is given, cross-attention defaults to self-attention
-            for i, block in enumerate(self.transformer_blocks):
-                x = block(x, mask=mask)
-            x = rearrange(x, '(b hw) t c -> b hw t c', b=b).contiguous()
-        else:
-            x = rearrange(x, '(b hw) t c -> b hw t c', b=b).contiguous()
-            context = rearrange(context, '(b t) l con -> b t l con', t=t).contiguous()
-            for i, block in enumerate(self.transformer_blocks):
-                # calculate each batch one by one (since number in shape could not greater then 65,535 for some package)
-                for j in range(b):
-                    context_j = repeat(
-                        context[j],
-                        't l con -> (t r) l con', r=(h * w) // t, t=t).contiguous()
-                    ## note: causal mask will not applied in cross-attention case
-                    x[j] = block(x[j], context=context_j)
+        # transformer (1block)    
+        for i, block in enumerate(self.transformer_blocks):
+            x = block(x, mask=mask) # no context
+        x = rearrange(x, '(b hw) t c -> b hw t c', b=b).contiguous()
         
+        # proj out
         if self.use_linear:
             x = self.proj_out(x)
             x = rearrange(x, 'b (h w) t c -> b c t h w', h=h, w=w).contiguous()
@@ -321,6 +349,77 @@ class TemporalTransformer(nn.Module):
             x = rearrange(x, '(b h w) c t -> b c t h w', b=b, h=h, w=w).contiguous()
 
         return x + x_in
+
+
+class ContextAwareTmpAttention(nn.Module):
+    """
+    Context-Aware Temporal Attention
+    same arguments as CrossAttention
+    """
+    def __init__(self, query_dim, context_dim=None, heads=8, dim_head=64, dropout=0., 
+                relative_position=False, temporal_length=None, img_cross_attention=False):
+        super().__init__()
+
+        inner_dim = dim_head * heads
+        context_dim = default(context_dim, query_dim) # should be query_dim
+
+        self.scale = dim_head**-0.5
+        self.heads = heads
+        self.dim_head = dim_head
+        self.to_q = nn.Linear(query_dim, inner_dim, bias=False)
+        self.to_k = nn.Linear(context_dim, inner_dim, bias=False)
+        self.to_v = nn.Linear(context_dim, inner_dim, bias=False)
+        self.to_out = nn.Sequential(nn.Linear(inner_dim, query_dim), nn.Dropout(dropout))
+
+        self.text_context_len = 77
+
+        self.beta = nn.Parameter(torch.zeros(self.heads), requires_grad=True) # Context-Aware Bias
+
+        print(f"[Context-Aware Temporal Attention] use Context-Aware Bias with beta heads={self.heads}")
+
+    def forward(self, x, context=None, mask=None):
+        """
+        x: (b*l, t, c) for temporal attention
+        context: None (self-attention)
+        mask: (b*l, t, c) attention output from cross-attention in spatial transformer
+        if no mask is given, it degrades to normal temporal attention
+        """
+        
+        h = self.heads
+
+        q = self.to_q(x) # (b*l, t, c) -> (b*l, t, h*d)
+        context = default(context, x) # x
+        k = self.to_k(context) # (b*l, t, c) -> (b*l, t, h*d)
+        v = self.to_v(context) # (b*l, t, c) -> (b*l, t, h*d)
+
+        q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> (b h) n d', h=h), (q, k, v))
+        sim = torch.einsum('b i d, b j d -> b i j', q, k) * self.scale # (b*l*h, t, t)
+
+        del k
+        del q
+
+        # Context-Aware Bias
+        if exists(mask):
+            # prepare symmetric attention mask
+            symmetric_mask = mask @ mask.transpose(-1, -2) / math.sqrt(mask.shape[-1]) # (b*l, t, c) @ (b*l, c, t) -> (b*l, t, t)
+            symmetric_mask = symmetric_mask - torch.diag_embed(torch.diagonal(symmetric_mask, dim1=-2, dim2=-1)) # zero diagonal
+            symmetric_mask = repeat(symmetric_mask, 'b i j -> (b h) i j', h=h) # (bl*h, t, t)
+
+            # prepare beta
+            expanded_beta = self.beta.unsqueeze(1).unsqueeze(2) # (h, 1, 1)
+            expanded_beta = repeat(expanded_beta, 'h i j -> (b h) i j', b=mask.shape[0]) # (h,1,1) -> (bl*h,1,1)
+
+            # add Context-Aware Bias
+            symmetric_mask = symmetric_mask * expanded_beta # (bl*h, t, t)
+            sim = sim + symmetric_mask # zero-init
+
+        # attention
+        sim = sim.softmax(dim=-1)
+        out = torch.einsum('b i j, b j d -> b i d', sim, v)
+        out = rearrange(out, '(b h) n d -> b n (h d)', h=h)
+
+        return self.to_out(out)
+
 
 # -----------------------------------------------------------
 # Contextualizer (4 layers of ContextualizerBlock)
@@ -443,6 +542,8 @@ def build_local_mask(t: int, radius: int = 1, device=None):
     ar = torch.arange(t, device=device)
     mask = (ar[:, None] - ar[None, :]).abs() <= radius   # [t, t] boolean
     return mask.float()   # 後段で repeat して使う
+
+
 
 # -----------------------------------------------------------
 # Other attention modules (not used)

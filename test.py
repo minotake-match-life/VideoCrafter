@@ -76,6 +76,9 @@ def main(args):
     elif args.use_contextualizer:
         print("<config> Using contextualizer", flush=True)
         config['params']['unet_config']['params']['contextualizer'] = True
+    if args.use_c_aware:
+        print("<config> Using Context-Aware Temporal Attention", flush=True)
+        config['params']['unet_config']['params']['c_aware'] = True
     model = instantiate_from_config(config)
     model = model.cuda()
 
@@ -129,10 +132,11 @@ if __name__ == '__main__':
 
     parser.add_argument("--ddim_steps", type=int, default=50, help="steps of ddim if positive, otherwise use DDPM")
     parser.add_argument("--ddim_eta", type=float, default=0.0, help="eta for ddim sampling (0.0 yields deterministic sampling)")
-    parser.add_argument("--unconditional_guidance_scale", type=float, default=7.5, help="prompt classifier-free guidance")
+    parser.add_argument("--unconditional_guidance_scale", type=float, default=12, help="prompt classifier-free guidance")
 
     parser.add_argument("--use_contextualizer", action="store_true")
     parser.add_argument("--use_improve_contextualizer", action="store_true")
+    parser.add_argument("--use_c_aware", action="store_true")
 
 
     args = parser.parse_args()
