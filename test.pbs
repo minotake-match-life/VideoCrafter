@@ -6,7 +6,7 @@
 #PBS -l walltime=10:00:00
 #PBS -W group_list=xg25g011
 #PBS -N test_freeze_spatial_improve_caware
-#PBS -o /work/xg25g011/x10574/VideoCrafter/logs/test.out
+#PBS -o /work/xg25g011/x10574/VideoCrafter/logs/test2.out
 #PBS -j oe
 
 # ------- runtime env -------
@@ -14,8 +14,9 @@ source ~/.bashrc
 cd "$PBS_O_WORKDIR"
 
 uv run python test.py \
-    --ckpt_path "/work/xg25g011/x10574/VideoCrafter/logs/train/freeze_spatial_improve_caware/2025-10-05_191127/model_012.pt" \
-    --output_dir "./output/freeze_spatial_improve_caware_cp12" \
+    --ckpt_path "/work/xg25g011/x10574/VideoCrafter/logs/train/freeze_spatial_improve_caware/2025-10-07_200123/model_025.pt" \
+    --output_dir "./output/freeze_spatial_improve_caware_cp25/wikihow" \
     --use_improve_contextualizer \
     --use_c_aware \
-    > /work/xg25g011/x10574/VideoCrafter/logs/test4.log 2>&1
+    --prompt_file "/work/xg25g011/x10574/ShowHowData/data/WikiHowTest/prompt_file.txt" \
+    > /work/xg25g011/x10574/VideoCrafter/logs/test2.log 2>&1

@@ -3,10 +3,10 @@
 # ------- qsub options -------
 #PBS -q regular-g
 #PBS -l select=8:mpiprocs=1       
-#PBS -l walltime=48:00:00
+#PBS -l walltime=24:00:00
 #PBS -W group_list=xg25g011
 #PBS -N freeze_spatial_improve_caware
-#PBS -o /work/xg25g011/x10574/VideoCrafter/logs/freeze_spatial_improve_caware.out
+#PBS -o /work/xg25g011/x10574/VideoCrafter/logs/freeze_spatial_improve_caware3.out
 #PBS -j oe
 
 # ------- runtime env -------
@@ -38,8 +38,7 @@ mpirun -n 8 --map-by ppr:1:node \
     --local_batch_size 4 \
     --dataset_root "/work/xg25g011/x10574/ShowHowData/data/ShowHowToTrain" \
     --exp_name "freeze_spatial_improve_caware" \
-    --ft_mode "freeze_spatial" \
     --use_improve_contextualizer \
     --use_c_aware \
-    --pretrained_ckpt "/work/xg25g011/x10574/VideoCrafter/logs/train/freeze_spatial_improve_caware/2025-10-05_191127/model_023.pt" \
-    > /work/xg25g011/x10574/VideoCrafter/logs/freeze_spatial_improve_caware.log 2>&1
+    --pretrained_ckpt "/work/xg25g011/x10574/VideoCrafter/logs/train/freeze_spatial_improve_caware/2025-10-07_200123/model_030.pt" \
+    > /work/xg25g011/x10574/VideoCrafter/logs/freeze_spatial_improve_caware3.log 2>&1

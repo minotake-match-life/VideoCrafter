@@ -10,8 +10,8 @@ model:
     cond_stage_trainable: false
     conditioning_key: crossattn
     image_size:
-    - 40
-    - 64
+    - 32
+    - 32
     channels: 4
     scale_by_std: false
     scale_factor: 0.18215
