@@ -2,7 +2,7 @@
 # ------- qsub options -------
 #PBS -A DDIPM
 #PBS -q gen_S
-#PBS -N test_fs_improve_caware
+#PBS -N test_fs_improve_caware_st2
 #PBS -o /work/DDIPM/okamoto_s/VideoCrafter/logs/test.out
 #PBS -j o
 #PBS -b 1                       
@@ -14,10 +14,9 @@ cd "$PBS_O_WORKDIR"
 
 # ------ run inference ------
 uv run python test.py \
-    --ckpt_path "/work/DDIPM/okamoto_s/VideoCrafter/logs/train/fs_improve_caware/2025-10-09_154904/model_005.pt" \
+    --ckpt_path "/work/DDIPM/okamoto_s/VideoCrafter/logs/train/fs_improve_caware_st2/2025-10-10_160010/model_035.pt" \
     --dataset "showhow" \
-    --unconditional_guidance_scale 7.5 \
     --use_improve_contextualizer \
     --use_c_aware \
-    --output_dir "./output/fs_improve_caware_cp05/showhow" \
+    --output_dir "./output/fs_improve_caware_cp30_cp05/showhow" \
     > /work/DDIPM/okamoto_s/VideoCrafter/logs/test.log 2>&1

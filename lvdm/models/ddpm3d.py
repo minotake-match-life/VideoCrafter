@@ -16,7 +16,7 @@ mainlogger = logging.getLogger('mainlogger')
 import torch
 import torch.nn as nn
 from torchvision.utils import make_grid
-import pytorch_lightning as pl
+#import pytorch_lightning as pl
 from utils.utils import instantiate_from_config
 from lvdm.ema import LitEma
 from lvdm.distributions import DiagonalGaussianDistribution
@@ -35,7 +35,7 @@ __conditioning_keys__ = {'concat': 'c_concat',
                          'crossattn': 'c_crossattn',
                          'adm': 'y'}
 
-class DDPM(pl.LightningModule):
+class DDPM(nn.Module):
     # classic DDPM with Gaussian diffusion, in image space
     def __init__(self,
                  unet_config,
@@ -666,6 +666,11 @@ class LatentDiffusion(DDPM):
         if return_intermediates:
             return img, intermediates
         return img
+    
+    # add (model.device)
+    @property
+    def device(self):
+        return next(self.parameters()).device
 
     ## Never delete this func: it is used in log_images() and inference stage
     def get_image_embeds(self, batch_imgs):
@@ -675,7 +680,7 @@ class LatentDiffusion(DDPM):
         return img_emb
 
 
-class DiffusionWrapper(pl.LightningModule):
+class DiffusionWrapper(nn.Module):
     def __init__(self, diff_model_config, conditioning_key):
         super().__init__()
         self.diffusion_model = instantiate_from_config(diff_model_config)

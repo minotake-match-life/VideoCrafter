@@ -1,6 +1,6 @@
 import importlib
 import numpy as np
-import cv2
+#import cv2
 import torch
 import torch.distributed as dist
 import os
@@ -55,7 +55,7 @@ def load_npz_from_paths(data_paths):
     data = np.concatenate(data, axis=0)
     return data   
 
-
+""" 
 def resize_numpy_image(image, max_resolution=512 * 512, resize_short_edge=None):
     h, w = image.shape[:2]
     if resize_short_edge is not None:
@@ -67,7 +67,7 @@ def resize_numpy_image(image, max_resolution=512 * 512, resize_short_edge=None):
     w = int(np.round(w * k / 64)) * 64
     image = cv2.resize(image, (w, h), interpolation=cv2.INTER_LANCZOS4)
     return image
-
+"""
 
 def setup_dist(args):
     if dist.is_initialized():

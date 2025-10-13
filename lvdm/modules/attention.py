@@ -278,7 +278,6 @@ class TemporalTransformer(nn.Module):
         inner_dim = n_heads * d_head
 
         self.norm = torch.nn.GroupNorm(num_groups=32, num_channels=in_channels, eps=1e-6, affine=True)
-        self.proj_in = nn.Conv1d(in_channels, inner_dim, kernel_size=1, stride=1, padding=0)
         if not use_linear:
             self.proj_in = nn.Conv1d(in_channels, inner_dim, kernel_size=1, stride=1, padding=0)
         else:
@@ -357,7 +356,7 @@ class ContextAwareTmpAttention(nn.Module):
     same arguments as CrossAttention
     """
     def __init__(self, query_dim, context_dim=None, heads=8, dim_head=64, dropout=0., 
-                relative_position=False, temporal_length=None, img_cross_attention=False):
+                relative_position=False, temporal_length=None, img_cross_attention=False, zero_diagonal=False):
         super().__init__()
 
         inner_dim = dim_head * heads
@@ -374,6 +373,8 @@ class ContextAwareTmpAttention(nn.Module):
         self.text_context_len = 77
 
         self.beta = nn.Parameter(torch.zeros(self.heads), requires_grad=True) # Context-Aware Bias
+        self.mask_layernorm = nn.LayerNorm(query_dim)
+        self.zero_diagonal = zero_diagonal
 
         print(f"[Context-Aware Temporal Attention] use Context-Aware Bias with beta heads={self.heads}")
 
@@ -400,9 +401,18 @@ class ContextAwareTmpAttention(nn.Module):
 
         # Context-Aware Bias
         if exists(mask):
-            # prepare symmetric attention mask
+            
+            # LayerNorm
+            mask = self.mask_layernorm(mask) # (b*l, t, c)
+
+            # compute symmetric attention matrix
             symmetric_mask = mask @ mask.transpose(-1, -2) / math.sqrt(mask.shape[-1]) # (b*l, t, c) @ (b*l, c, t) -> (b*l, t, t)
-            symmetric_mask = symmetric_mask - torch.diag_embed(torch.diagonal(symmetric_mask, dim1=-2, dim2=-1)) # zero diagonal
+            
+            # zero diagonal (False)
+            if self.zero_diagonal: 
+                symmetric_mask = symmetric_mask - torch.diag_embed(torch.diagonal(symmetric_mask, dim1=-2, dim2=-1)) 
+
+            # repeat for heads
             symmetric_mask = repeat(symmetric_mask, 'b i j -> (b h) i j', h=h) # (bl*h, t, t)
 
             # prepare beta

@@ -40,10 +40,12 @@ def _apply_ft_mode(unet: torch.nn.Module, mode: str):
     """
 
     if mode == "all":
+        # UNet params: trainable=1,413,284,420 / total=1,413,284,420
         return
 
     elif mode == "freeze_spatial":
-        # UNet params: trainable=722,601,098 / total=1,536,084,938
+        # UNet params: trainable=722,651,018 / total=1,536,134,858 (improve & c_aware)
+        # UNet params: trainable=599,800,580 / total=1,413,284,420 (fs)
         
         # いったん UNet 全体を学習可に
         _set_requires_grad(unet, True)
@@ -66,7 +68,7 @@ def _apply_ft_mode(unet: torch.nn.Module, mode: str):
             if isinstance(m, ResBlock):
                 # ResBlock 丸ごと凍結
                 _set_requires_grad(m, False)
-                # ただし temporal conv は学習可に戻す（temporal_conv）
+                # ただし temporal conv は学習可に戻す（temopral_conv はミスではなく正しい変数名）
                 if getattr(m, "use_temporal_conv", False) and hasattr(m, "temopral_conv"):
                     _set_requires_grad(m.temopral_conv, True)
     
@@ -242,11 +244,11 @@ def main_worker(local_rank, cluster_args, args):
 
             for video_frames, prompts in iterator_data:
                 B, C, T, H, W = video_frames.shape
-                frame_stride = torch.ones((B,), dtype=torch.long, device=model.device)
+                frame_stride = torch.ones((B,), dtype=torch.long, device=device)
 
                 with torch.no_grad():
                     text_emb = model.get_learned_conditioning(prompts)
-                    z = get_latent_z(model, video_frames.to(model.device))
+                    z = get_latent_z(model, video_frames.to(device))
                 
                 # 10% dropout 
                 if random.random() < 0.1:
@@ -257,7 +259,7 @@ def main_worker(local_rank, cluster_args, args):
                     "c_crossattn": [text_emb],
                 }
 
-                t = torch.randint(0, model.num_timesteps, (B,), device=model.device).long()
+                t = torch.randint(0, model.num_timesteps, (B,), device=device).long()
                 noise = torch.randn_like(z)
                 x_noisy = model.q_sample(x_start=z, t=t, noise=noise)
 

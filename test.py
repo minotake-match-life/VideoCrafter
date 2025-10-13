@@ -13,12 +13,18 @@ from lvdm.models.samplers.ddim import DDIMSampler
 from utils.utils import instantiate_from_config
 
 
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+else:
+    raise ValueError("CPU inference is not supported.")
+
+
 @torch.no_grad()
 def synthesis(model, prompts, noise_shape, n_samples=1, ddim_steps=50, ddim_eta=1.,
               unconditional_guidance_scale=1.0, **kwargs):
     ddim_sampler = DDIMSampler(model)
     batch_size = noise_shape[0]
-    fps = torch.tensor([1.] * batch_size, dtype=torch.long, device=model.device)
+    fps = torch.tensor([1.] * batch_size, dtype=torch.long, device=device)
 
     cond_emb = model.get_learned_conditioning(prompts)
     cond = {"c_crossattn": [cond_emb]}
@@ -68,6 +74,7 @@ def synthesis(model, prompts, noise_shape, n_samples=1, ddim_steps=50, ddim_eta=
 
 
 def main(args):
+    
     print("Loading model...")
     config = OmegaConf.load("./configs/inference_t2v_512_v2.0.yaml")["model"]
     if args.use_improve_contextualizer:
@@ -80,11 +87,11 @@ def main(args):
         print("<config> Using Context-Aware Temporal Attention", flush=True)
         config['params']['unet_config']['params']['c_aware'] = True
     model = instantiate_from_config(config)
-    model = model.cuda()
+    model = model.to(device)
 
     # load U-Net and VAE weights
     print("load model from", args.ckpt_path)
-    state_dict = torch.load(args.ckpt_path, map_location="cuda", weights_only=False)
+    state_dict = torch.load(args.ckpt_path, map_location=device, weights_only=False)
     model.load_state_dict(state_dict, strict=True)
     model.eval()
 
@@ -125,7 +132,8 @@ def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("--ckpt_path", type=str, required=True)
-    parser.add_argument("--prompt_file", type=str, default="/work/xg25g011/x10574/ShowHowData/data/ShowHowToTest/prompt_file.txt",
+    parser.add_argument("--dataset", choices=["showhow", "wikihow"], default="showhow")
+    parser.add_argument("--prompt_file", type=str, default=None,
                         help="text file with image paths and prompts")
     parser.add_argument("--delimiter", type=str, default="|", help="delimiter for image paths and prompts")
     parser.add_argument('--output_dir', type=str, default=f"./output/{time.strftime('%Y%m%d_%H%M')}", help='Output directory')
@@ -140,5 +148,7 @@ if __name__ == '__main__':
 
 
     args = parser.parse_args()
+    if args.prompt_file is None:
+        args.prompt_file = f"./weights/{args.dataset}.txt"
 
     main(args)
