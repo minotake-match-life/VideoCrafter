@@ -92,6 +92,16 @@ def main(args):
     # load U-Net and VAE weights
     print("load model from", args.ckpt_path)
     state_dict = torch.load(args.ckpt_path, map_location=device, weights_only=False)
+    if "state_dict" in list(state_dict.keys()):
+        print("load state_dict from key 'state_dict'")
+        state_dict = state_dict["state_dict"]
+        for k in list(state_dict.keys()):
+            if "framestride_embed" in k:
+                new_key = k.replace("framestride_embed", "fps_embedding")
+                state_dict[new_key] = state_dict[k]
+                del state_dict[k]
+    else:
+        print("load state_dict from the checkpoint directly")
     model.load_state_dict(state_dict, strict=True)
     model.eval()
 

@@ -11,4 +11,5 @@ logs/
 output/
 distfiles/
 .venv/
-.pbs
+*.pbs
+sandbox/

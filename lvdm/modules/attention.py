@@ -154,7 +154,6 @@ class BasicTransformerBlock(nn.Module):
 
         self.c_aware = c_aware
         if self.c_aware:
-            print(f"[BasicTransformerBlock] use Context-Aware Temporal Attention")
             self.attn2_out = None
 
     def forward(self, x, context=None, mask=None):
@@ -295,7 +294,7 @@ class TemporalTransformer(nn.Module):
             raise NotImplementedError("TemporalTransformer only supports self-attention now.")
         
         self.transformer_blocks = nn.ModuleList([
-            BasicTransformerBlock(
+            BasicTransformerBlock( 
                 inner_dim,
                 n_heads,
                 d_head,
@@ -376,8 +375,6 @@ class ContextAwareTmpAttention(nn.Module):
         self.mask_layernorm = nn.LayerNorm(query_dim)
         self.zero_diagonal = zero_diagonal
 
-        print(f"[Context-Aware Temporal Attention] use Context-Aware Bias with beta heads={self.heads}")
-
     def forward(self, x, context=None, mask=None):
         """
         x: (b*l, t, c) for temporal attention
@@ -430,7 +427,6 @@ class ContextAwareTmpAttention(nn.Module):
 
         return self.to_out(out)
 
-
 # -----------------------------------------------------------
 # Contextualizer (4 layers of ContextualizerBlock)
 # -----------------------------------------------------------
@@ -458,7 +454,6 @@ class Contextualizer(nn.Module):
                 nn.SiLU(),
                 nn.Linear(dim, dim),
             )
-            print(f"[Contextualizer] improve contextualizer with positional embedding")
 
     def forward(self, x, num_frames):
         x_in = x

@@ -7,8 +7,8 @@
 #PBS -T openmpi
 #PBS -v NQSV_MPI_VER=4.1.8/gcc11.4.0-cuda12.8.1
 #PBS -v OMP_NUM_THREADS=1       # CPUスレッド暴走を防ぐ
-#PBS -N fs_improve
-#PBS -o /work/DDIPM/okamoto_s/VideoCrafter/logs/train3.out
+#PBS -N fs_improve_inout
+#PBS -o /work/DDIPM/okamoto_s/VideoCrafter/logs/fs_improve_inout.out
 #PBS -j o
 
 # ------- runtime env -------
@@ -30,7 +30,7 @@ mpirun ${NQSV_MPIOPTS} -np 8 -npernode 1 \
   uv run python train.py \
     --local_batch_size 4 \
     --dataset_root "/work/DDIPM/okamoto_s/ShowHowData/data/ShowHowToTrain" \
-    --exp_name "fs_improve" \
+    --exp_name "fs_improve_inout" \
     --ft_mode "freeze_spatial" \
     --use_improve_contextualizer \
-    > /work/DDIPM/okamoto_s/VideoCrafter/logs/train3.log 2>&1
+    > /work/DDIPM/okamoto_s/VideoCrafter/logs/fs_improve_inout.log 2>&1

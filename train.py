@@ -46,15 +46,21 @@ def _apply_ft_mode(unet: torch.nn.Module, mode: str):
     elif mode == "freeze_spatial":
         # UNet params: trainable=722,651,018 / total=1,536,134,858 (improve & c_aware)
         # UNet params: trainable=599,800,580 / total=1,413,284,420 (fs)
+        # UNet params: trainable=549,424,256 / total=1,413,284,420 (fs noattn)
         
         # いったん UNet 全体を学習可に
         _set_requires_grad(unet, True)
 
-        # 空間系を凍結（Transformerも含む）
+         # in と out を丸ごと凍結
+        _set_requires_grad(unet.input_blocks[0], False)  # 最初の conv（in）
+        _set_requires_grad(unet.out, False)              # 末尾の norm+SiLU+zero(conv)（out）
+
+        # SpatialTransformer / Downsample / Upsample / ResBlock を凍結
         for m in unet.modules():
             
             if isinstance(m, SpatialTransformer):
                 _set_requires_grad(m, False)
+
                 # ただしcross attention は学習可に戻す
                 if hasattr(m, "transformer_blocks"): # nn.ModuleList([BasicTransformerBlock(..)])
                     for block in m.transformer_blocks: # BasicTransformerBlock
@@ -74,6 +80,7 @@ def _apply_ft_mode(unet: torch.nn.Module, mode: str):
     
     else:
         raise ValueError(f"unknown ft_mode: {mode}")
+        
 
 # -----------------------------------------------------------
 # Main training function
